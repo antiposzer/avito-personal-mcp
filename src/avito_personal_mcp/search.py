@@ -492,6 +492,9 @@ async def _submit_search_form(page: Page, origin: str, query: str) -> None:
     if not await search_input.count() or not await submit_button.count():
         raise SearchDiscoveryError("Avito search form did not match the observed page structure")
 
+    # The observed home layout can expose its input before React attaches its
+    # change handler. Let that initial hydration finish before filling it.
+    await page.wait_for_timeout(1_000)
     await search_input.fill(query)
 
     # Avito can render an enabled button before the client-side search action
@@ -500,7 +503,12 @@ async def _submit_search_form(page: Page, origin: str, query: str) -> None:
     # guessing URL state or issuing a duplicate action.
     await page.wait_for_timeout(1_500)
     before_url = page.url
-    await submit_button.click()
+    if await submit_button.is_visible():
+        await submit_button.click()
+    else:
+        # Enter was verified on the current home layout as the normal search
+        # action when the button remains hidden. Do not force-click hidden UI.
+        await search_input.press("Enter")
     try:
         await page.wait_for_url(lambda url: str(url) != before_url, timeout=10_000)
     except PlaywrightTimeoutError as exc:

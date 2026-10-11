@@ -48,16 +48,19 @@ def server_parameters() -> StdioServerParameters:
     """Build the local stdio command without forwarding the user's environment.
 
     The MCP stdio client intentionally starts a constrained child environment.
-    Forward only the one documented, non-secret server setting so ``avito-ai``
+    Forward only documented non-secret server settings so ``avito-ai``
     honours an intentional loopback CDP override without passing incidental
     shell credentials or unrelated application configuration to the server.
     """
 
     cdp_url = os.environ.get("AVITO_MCP_CDP_URL")
-    server_env = {"AVITO_MCP_CDP_URL": cdp_url} if cdp_url else None
+    server_env = {"AVITO_MCP_CDP_URL": cdp_url} if cdp_url else {}
+    monitor_db = os.environ.get("AVITO_MCP_MONITOR_DB")
+    if monitor_db:
+        server_env["AVITO_MCP_MONITOR_DB"] = monitor_db
     return StdioServerParameters(
         command=installed_server_command(),
-        env=server_env,
+        env=server_env or None,
     )
 
 
@@ -72,17 +75,13 @@ async def call_mcp_tool(name: str, arguments: dict[str, object] | None = None) -
             result = await session.call_tool(name, arguments=arguments or {})
 
     if result.is_error:
-        text = "\n".join(
-            block.text for block in result.content if isinstance(block, TextContent)
-        )
+        text = "\n".join(block.text for block in result.content if isinstance(block, TextContent))
         raise RuntimeError(text or f"MCP tool {name!r} returned an error")
 
     if result.structured_content is not None:
         return result.structured_content
 
-    text_parts = [
-        block.text for block in result.content if isinstance(block, TextContent)
-    ]
+    text_parts = [block.text for block in result.content if isinstance(block, TextContent)]
     if len(text_parts) == 1:
         try:
             return json.loads(text_parts[0])
@@ -110,6 +109,11 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("my-listings", help="show your Avito listings")
     subparsers.add_parser("favorites", help="show saved Avito listings")
     subparsers.add_parser("chats", help="show visible Avito chats")
+    subparsers.add_parser("monitor-panel", help="keep the monitoring panel and worker running")
+    subparsers.add_parser("monitor-list", help="show saved monitoring searches")
+    events = subparsers.add_parser("monitor-events", help="read durable new-listing events")
+    events.add_argument("--after-id", type=int, default=0)
+    events.add_argument("--limit", type=int, default=100)
 
     search = subparsers.add_parser("search", help="search Avito")
     search.add_argument("query")
@@ -159,6 +163,10 @@ def command_to_tool(args: argparse.Namespace) -> tuple[str, dict[str, object]]:
         return "avito_favorites", {}
     if args.command == "chats":
         return "avito_chats", {}
+    if args.command == "monitor-list":
+        return "avito_monitor_list", {}
+    if args.command == "monitor-events":
+        return "avito_monitor_events", {"after_id": args.after_id, "limit": args.limit}
     if args.command == "search":
         return "avito_search", {
             "query": args.query,
@@ -188,6 +196,8 @@ def render_result(result: Any, *, compact: bool) -> str:
 async def async_main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "monitor-panel":
+        return await run_monitor_panel(compact=args.compact)
     tool_name, tool_arguments = command_to_tool(args)
 
     try:
@@ -206,6 +216,24 @@ async def async_main(argv: list[str] | None = None) -> int:
         return 1
 
     print(render_result(result, compact=args.compact))
+    return 0
+
+
+async def run_monitor_panel(*, compact: bool) -> int:
+    """Keep the stdio connection alive so the returned panel URL remains usable."""
+    async with stdio_client(server_parameters()) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.call_tool("avito_monitor_panel", {})
+            if result.is_error:
+                raise RuntimeError("Could not start monitoring panel")
+            value = result.structured_content
+            if value is None:
+                value = json.loads(
+                    next(block.text for block in result.content if isinstance(block, TextContent))
+                )
+            print(render_result(value, compact=compact), flush=True)
+            await asyncio.Event().wait()
     return 0
 
 

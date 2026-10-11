@@ -37,6 +37,9 @@ package-dir = {"" = "src"}
 where = ["src"]
 include = ["avito_personal_mcp*"]
 
+[tool.setuptools.package-data]
+avito_personal_mcp = ["static/*.html"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

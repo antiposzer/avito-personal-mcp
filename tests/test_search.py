@@ -177,7 +177,8 @@ def test_normalize_search_result_rejects_off_origin_url(href: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_submit_search_waits_for_readiness_before_one_visible_click() -> None:
+@pytest.mark.parametrize("submit_visible", [True, False])
+async def test_submit_search_waits_for_readiness_before_one_action(submit_visible: bool) -> None:
     """The observed client-side action is ready after the settle interval."""
 
     class FakeResponse:
@@ -203,7 +204,18 @@ async def test_submit_search_waits_for_readiness_before_one_visible_click() -> N
 
         async def click(self) -> None:
             assert self.selector == SEARCH_SUBMIT_SELECTOR
-            assert self.page.settling_waits == [1_500]
+            assert self.page.settling_waits == [1_000, 1_500]
+            assert submit_visible
+            self.page.submit_clicks += 1
+            self.page.url = "https://www.avito.ru/syktyvkar/noutbuki"
+
+        async def is_visible(self) -> bool:
+            return submit_visible
+
+        async def press(self, key: str) -> None:
+            assert self.selector == SEARCH_INPUT_SELECTOR and key == "Enter"
+            assert not submit_visible
+            assert self.page.settling_waits == [1_000, 1_500]
             self.page.submit_clicks += 1
             self.page.url = "https://www.avito.ru/syktyvkar/noutbuki"
 
@@ -234,7 +246,7 @@ async def test_submit_search_waits_for_readiness_before_one_visible_click() -> N
 
     assert page.filled_query == "ноутбук"
     assert page.submit_clicks == 1
-    assert page.settling_waits == [1_500]
+    assert page.settling_waits == [1_000, 1_500]
     assert page.url == "https://www.avito.ru/syktyvkar/noutbuki"
 
 

@@ -1,0 +1,56 @@
+<!doctype html><html lang="ru"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Мониторинг объявлений</title><style>
+body{font:16px system-ui,sans-serif;background:#f5f6f8;color:#202634;margin:0}
+main{max-width:1080px;margin:32px auto;padding:0 24px}h1{font-size:28px;margin-bottom:8px}
+.muted{color:#657084;font-size:14px;line-height:1.6}.box{background:white;border:1px solid #e1e5ec;
+border-radius:14px;padding:22px;margin:20px 0}form{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+label{display:grid;gap:7px;font-size:14px}input,select,button{font:inherit;padding:10px;border:1px solid #cbd2de;
+border-radius:8px;min-width:0}button{background:#334d7c;color:white;cursor:pointer}
+button.secondary{background:white;color:#334d7c}.wide{grid-column:1/-1}.row{display:flex;gap:12px;
+justify-content:space-between;align-items:start}.error{color:#a13325}.pill{font-size:12px;background:#edf1f8;
+padding:4px 8px;border-radius:6px}.entry{border-top:1px solid #e4e7ee;padding:16px 0}a{color:#225ba6}
+.price{font-size:20px;font-weight:600}#status{min-height:24px}h2{font-size:21px}
+@media(max-width:720px){form{grid-template-columns:1fr}main{padding:0 14px}.row{flex-wrap:wrap}}
+</style><main><h1>Мониторинг объявлений</h1>
+<p class="muted">Любой поиск · Проверка каждые 5 минут · Новые результаты без повторов</p>
+<section class="box"><h2>Создать мониторинг</h2><form id="form">
+<label class="wide">Поисковый запрос<input id="query" required maxlength="200" placeholder="Например, iPhone 15 Pro Max"></label>
+<label>Город<input id="city" placeholder="Например, Саратов"></label>
+<label>Состояние<select id="condition"><option value="any">Любое</option><option value="new">Новое</option><option value="used">Б/у</option></select></label>
+<label>Продавец<select id="seller_type"><option value="any">Любой</option><option value="private">Частный</option><option value="shop">Магазин</option></select></label>
+<label>Минимальный рейтинг<input id="min_rating" type="number" min="0" max="5" step="0.1" placeholder="Не ограничивать"></label>
+<label>Возраст объявления, минут<input id="max_age_minutes" type="number" min="1" max="1440" placeholder="Не ограничивать"></label>
+<div><p class="muted">Время — дата публикации / обновления, показанная Авито.</p></div>
+<button class="wide">Начать мониторинг</button></form><p id="status" role="status"></p>
+<p class="muted">Первый проход запоминает текущую выдачу. Результаты появятся при следующих проверках.
+Тип продавца определяется по описанию и может быть неточным. Если выбранный параметр неизвестен,
+объявление не проходит фильтр. Поиск проверяет первые 50 карточек; при насыщенной выдаче часть объявлений
+может быть пропущена. Уведомления в бот пока не подключены.</p></section>
+<section class="box"><h2>Сохранённые поиски</h2><div id="watches">Загрузка…</div></section>
+<section class="box"><div class="row"><h2>Найденные объявления</h2><span id="count" class="pill"></span></div>
+<div id="events">Пока нет новых результатов.</div></section></main>
+<script>
+const token='__TOKEN__', $=id=>document.getElementById(id), choices={any:'Любое',new:'Новое',used:'Б/у',private:'Частный',shop:'Магазин'};
+let cursor=0, events=[], busy=false;
+const date=t=>t?new Intl.DateTimeFormat('ru-RU',{timeZone:'Europe/Saratov',dateStyle:'short',timeStyle:'short'}).format(typeof t==='number'?new Date(t*1000):new Date(t)):'Неизвестно';
+function node(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n}
+async function api(path,body){const r=await fetch(path,body?{method:'POST',headers:{'Content-Type':'application/json','X-Monitor-Token':token},body:JSON.stringify(body)}:{});const d=await r.json();if(!r.ok)throw Error(d.error||'Не удалось выполнить действие');return d}
+function drawWatches(items){$('watches').replaceChildren();if(!items.length){$('watches').textContent='Добавьте первый поисковый запрос.';return}
+for(const w of items){const wrap=node('div',undefined,'entry'),row=node('div',undefined,'row');row.append(node('strong',w.config.query));
+const toggle=node('button',w.enabled?'Приостановить':'Возобновить','secondary');toggle.onclick=async()=>{try{await api('/api/enable',{watch_id:w.id,enabled:!w.enabled});await refresh()}catch(e){$('status').textContent=e.message}};row.append(toggle);wrap.append(row);
+const c=w.config;wrap.append(node('p',[c.city||'Все города',choices[c.condition],c.seller_type==='any'?'Любой продавец':choices[c.seller_type],c.min_rating===null?'Без ограничения рейтинга':'Рейтинг от '+c.min_rating,c.max_age_minutes===null?'Любое время':'До '+c.max_age_minutes+' минут'].join(' · '),'muted'));
+const state=!w.enabled?'Приостановлен':w.error==='rate_limited'?'Авито ограничил запросы. Ожидаем повтор.':w.error?'Источник недоступен. Повторим позже.':!w.initialized?'Запоминаем текущую выдачу…':'Работает';
+wrap.append(node('p',state+' · Последняя успешная проверка: '+date(w.last_success)+' · Следующая: '+date(w.next_due),'muted'));
+if(w.counts.limited)wrap.append(node('p','Достигнут предел 50 карточек: возможно, часть результатов не попала в проверку.','muted'));
+if(w.counts.pending)wrap.append(node('p','Ожидают проверки описания: '+w.counts.pending,'muted'));
+$('watches').append(wrap)}}
+function drawEvents(){const root=$('events');root.replaceChildren();$('count').textContent=events.length+' результатов';if(!events.length){root.textContent='Пока нет новых результатов.';return}
+for(const event of [...events].reverse()){const p=event.payload,wrap=node('article',undefined,'entry'),row=node('div',undefined,'row');let u;try{u=new URL(p.url)}catch{continue}if(u.protocol!=='https:'||u.hostname!=='www.avito.ru')continue;
+const a=node('a',p.title||'Объявление');a.href=u.href;a.target='_blank';a.rel='noopener noreferrer';row.append(a,node('span',p.price||'Цена не указана','price'));wrap.append(row);
+const seller=p.seller_inference;wrap.append(node('p',[p.location||'Город неизвестен',p.condition||'Состояние неизвестно',p.rating?'Рейтинг '+p.rating:'Рейтинг неизвестен',seller?seller.label+' (по описанию)':'Тип продавца не проверялся'].join(' · '),'muted'));
+wrap.append(node('p','Дата Авито: '+(p.publication?.date||p.date||'неизвестна')+' · Впервые найдено: '+date(p.first_seen_at),'muted'));root.append(wrap)}}
+async function refresh(){if(busy)return;busy=true;try{let d=await api('/api/state?after_id='+cursor);drawWatches(d.watches);const ids=new Set(events.map(x=>x.id));for(const e of d.events){if(!ids.has(e.id))events.push(e);cursor=Math.max(cursor,e.id)}events=events.slice(-200);drawEvents()}catch{$('status').textContent='Связь с мониторингом прервана. Проверьте, что сервер работает.'}finally{busy=false}}
+$('form').onsubmit=async e=>{e.preventDefault();$('status').textContent='Сохраняем…';try{const body={query:$('query').value,city:$('city').value.trim()||null,condition:$('condition').value,seller_type:$('seller_type').value,min_rating:$('min_rating').value===''?null:Number($('min_rating').value),max_age_minutes:$('max_age_minutes').value===''?null:Number($('max_age_minutes').value)};await api('/api/save',body);$('status').textContent='Мониторинг создан. Первый проход запомнит текущую выдачу.';await refresh()}catch(e){$('status').textContent=e.message}};
+refresh();setInterval(refresh,5000);
+</script></html>

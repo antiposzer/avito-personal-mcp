@@ -322,3 +322,7 @@ connection and the private-tunnel runbook for ChatGPT on the web.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+### Universal listing monitoring
+
+A local five-minute monitor supports city, condition, inferred seller type, minimum account rating and maximum listing age. Call `avito_monitor_panel` for its local dashboard, or run `avito-ai monitor-panel` and keep the process alive. See [MONITORING.md](docs/MONITORING.md) for accuracy limits, persistence and the event feed for a future notification bot.

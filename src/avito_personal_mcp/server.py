@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager, suppress
+
 from mcp.server import MCPServer
 
 from avito_personal_mcp import __version__
@@ -15,6 +18,8 @@ from avito_personal_mcp.config import Settings
 from avito_personal_mcp.favorites import FavoritesDiscoveryError, discover_favorites
 from avito_personal_mcp.listing_detail import ListingDetailError, discover_listing_detail
 from avito_personal_mcp.listings import ListingsDiscoveryError, discover_own_listings
+from avito_personal_mcp.monitor import MonitorManager, validate_config
+from avito_personal_mcp.monitor_panel import MonitorPanel
 from avito_personal_mcp.profile import ProfileDiscoveryError, discover_current_profile
 from avito_personal_mcp.search import SearchDiscoveryError, search_avito, validate_city
 from avito_personal_mcp.send_message import (
@@ -27,7 +32,112 @@ from avito_personal_mcp.send_message import (
     validate_message_text,
 )
 
-mcp = MCPServer("Avito Personal MCP")
+_monitor: MonitorManager | None = None
+
+
+def get_monitor() -> MonitorManager:
+    global _monitor
+    if _monitor is None:
+        _monitor = MonitorManager()
+    return _monitor
+
+
+@asynccontextmanager
+async def monitor_lifespan(_server):
+    manager = get_monitor()
+    worker = asyncio.create_task(manager.run())
+    try:
+        yield {}
+    finally:
+        worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await worker
+        manager.close_panel()
+
+
+mcp = MCPServer("Avito Personal MCP", lifespan=monitor_lifespan)
+
+
+@mcp.tool()
+async def avito_monitor_panel() -> dict[str, object]:
+    """Open the local panel for any saved search. No monitor is created automatically.
+
+    The returned loopback URL can be opened inside the client's browser. Monitoring
+    runs only while this MCP process and the user-controlled Chrome are running.
+    """
+    manager = get_monitor()
+    if manager.panel is None:
+        manager.panel = MonitorPanel(manager.store)
+    return {"status": "ok", "url": manager.panel.url, "interval_seconds": 300}
+
+
+@mcp.tool()
+async def avito_monitor_save(
+    query: str,
+    city: str | None = None,
+    condition: str = "any",
+    seller_type: str = "any",
+    min_rating: float | None = None,
+    max_age_minutes: int | None = None,
+    watch_id: str | None = None,
+) -> dict[str, object]:
+    """Save a universal search monitored every five minutes.
+
+    condition: any/new/used. seller_type: any/private/shop, inferred from description,
+    not Avito's verified account category. min_rating: 0–5. max_age_minutes: 1–1440,
+    based on Avito's displayed publication/update timestamp, never discovery time.
+    Unknown filtered metadata fails closed. City is checked on each result, using
+    its location or the observed city slug; unconfirmed cities are excluded.
+    First pass records a baseline without alerts. Changing criteria resets the
+    baseline and removes that search's previous events. Up to 50 result cards and
+    10 new detail pages are inspected per cycle; extra detail checks remain pending.
+    Events are local. No bot notifications or messages are sent.
+    """
+    try:
+        config = validate_config(query, city, condition, seller_type, min_rating, max_age_minutes)
+        watch = get_monitor().store.save(config, watch_id)
+        return {"status": "ok", "watch": watch}
+    except ValueError as exc:
+        return {"status": "invalid_request", "message": str(exc)}
+
+
+@mcp.tool()
+async def avito_monitor_list() -> dict[str, object]:
+    """List saved searches with local state, last check and next scheduled check."""
+    return {"status": "ok", "watches": get_monitor().store.list()}
+
+
+@mcp.tool()
+async def avito_monitor_enable(watch_id: str, enabled: bool) -> dict[str, object]:
+    """Pause or resume a search without forgetting its seen listing IDs."""
+    try:
+        get_monitor().store.enable(watch_id, enabled)
+        return {"status": "ok"}
+    except ValueError as exc:
+        return {"status": "invalid_request", "message": str(exc)}
+
+
+@mcp.tool()
+async def avito_monitor_events(
+    after_id: int = 0,
+    watch_id: str | None = None,
+    limit: int = 100,
+) -> dict[str, object]:
+    """Read durable new-listing events in ascending ID order.
+
+    Consumers persist the last delivered event ID and pass it as after_id. Empty
+    responses preserve the cursor. This feed is ready for a future bot integration;
+    it does not itself send notifications or acknowledge delivery to a bot.
+    """
+    try:
+        events = get_monitor().store.events(after_id, watch_id, limit)
+        return {
+            "status": "ok",
+            "events": events,
+            "next_cursor": events[-1]["id"] if events else after_id,
+        }
+    except ValueError as exc:
+        return {"status": "invalid_request", "message": str(exc)}
 
 
 @mcp.tool()
