@@ -46,12 +46,16 @@ def get_monitor() -> MonitorManager:
 async def monitor_lifespan(_server):
     manager = get_monitor()
     worker = asyncio.create_task(manager.run())
+    notifications = asyncio.create_task(manager.notifications.run())
     try:
         yield {}
     finally:
         worker.cancel()
+        notifications.cancel()
         with suppress(asyncio.CancelledError):
             await worker
+        with suppress(asyncio.CancelledError):
+            await notifications
         manager.close_panel()
 
 
@@ -67,7 +71,7 @@ async def avito_monitor_panel() -> dict[str, object]:
     """
     manager = get_monitor()
     if manager.panel is None:
-        manager.panel = MonitorPanel(manager.store)
+        manager.panel = MonitorPanel(manager.store, manager.notifications)
     return {"status": "ok", "url": manager.panel.url, "interval_seconds": 300}
 
 
@@ -91,7 +95,9 @@ async def avito_monitor_save(
     First pass records a baseline without alerts. Changing criteria resets the
     baseline and removes that search's previous events. Up to 50 result cards and
     10 new detail pages are inspected per cycle; extra detail checks remain pending.
-    Events are local. No bot notifications or messages are sent.
+    Events are retained locally. Telegram delivery is opt-in through the local
+    panel after the owner pairs a private chat. Bot tokens are never accepted
+    as MCP tool arguments and are never included in tool responses.
     """
     try:
         config = validate_config(query, city, condition, seller_type, min_rating, max_age_minutes)

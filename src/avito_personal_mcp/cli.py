@@ -58,6 +58,9 @@ def server_parameters() -> StdioServerParameters:
     monitor_db = os.environ.get("AVITO_MCP_MONITOR_DB")
     if monitor_db:
         server_env["AVITO_MCP_MONITOR_DB"] = monitor_db
+    monitor_port = os.environ.get("AVITO_MCP_MONITOR_PORT")
+    if monitor_port:
+        server_env["AVITO_MCP_MONITOR_PORT"] = monitor_port
     return StdioServerParameters(
         command=installed_server_command(),
         env=server_env or None,

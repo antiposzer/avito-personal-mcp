@@ -308,6 +308,15 @@ class MonitorManager:
         self.store = store or WatchStore()
         self.source_factory = source_factory
         self.panel = None
+        self._notifications = None
+
+    @property
+    def notifications(self):
+        if self._notifications is None:
+            from avito_personal_mcp.notifications import NotificationService
+
+            self._notifications = NotificationService(self.store)
+        return self._notifications
 
     async def run(self):
         while True:
@@ -397,7 +406,8 @@ class MonitorManager:
                             with self.store.connect() as con:
                                 con.execute(
                                     "UPDATE seen SET decision='inactive' WHERE watch_id=? "
-                                    "AND listing_id=?", (wid, row["listing_id"]),
+                                    "AND listing_id=?",
+                                    (wid, row["listing_id"]),
                                 )
                             continue
                         item["description"] = detail.get("description")

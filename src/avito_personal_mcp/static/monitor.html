@@ -26,13 +26,37 @@ padding:4px 8px;border-radius:6px}.entry{border-top:1px solid #e4e7ee;padding:16
 <p class="muted">Первый проход запоминает текущую выдачу. Результаты появятся при следующих проверках.
 Тип продавца определяется по описанию и может быть неточным. Если выбранный параметр неизвестен,
 объявление не проходит фильтр. Поиск проверяет первые 50 карточек; при насыщенной выдаче часть объявлений
-может быть пропущена. Уведомления в бот пока не подключены.</p></section>
+может быть пропущена.</p></section>
+<section class="box"><h2>Уведомления в Telegram</h2>
+<p class="muted">Подключи личный чат с ботом. Будут отправляться только новые события после подключения.
+На Windows токен защищён средствами системы и хранится вне исходного кода.</p>
+<label>Токен от BotFather<input id="tg-token" type="password" autocomplete="off" placeholder="Вставь токен сюда, не в переписку"></label>
+<p><button id="tg-setup">Подключить бота</button></p>
+<div id="tg-pair" hidden><p><a id="tg-link" target="_blank" rel="noopener noreferrer">Открыть бота в Telegram</a></p>
+<p class="muted">Нажми «Старт» в Telegram, затем кнопку ниже. Ссылка действует 10 минут.</p>
+<p class="muted">Если переход по ссылке не сработал, скопируй эту команду и отправь её в чат с ботом:</p>
+<p><code id="tg-command"></code></p>
+<button id="tg-confirm">Подтвердить подключение чата</button></div>
+<p><button id="tg-resume" class="secondary">Обновить ссылку без повторного ввода токена</button></p>
+<p id="tg-status" role="status">Telegram не подключён.</p><p id="tg-message" role="status"></p>
+<div class="row"><button id="tg-test" class="secondary" hidden>Отправить тестовое уведомление</button>
+<button id="tg-toggle" class="secondary" hidden>Приостановить уведомления</button></div>
+<p id="tg-uncertain" class="muted" hidden>Есть отправки без подтверждения Telegram. Автоматически не повторяем их, чтобы избежать дублей.</p>
+</section>
 <section class="box"><h2>Сохранённые поиски</h2><div id="watches">Загрузка…</div></section>
 <section class="box"><div class="row"><h2>Найденные объявления</h2><span id="count" class="pill"></span></div>
 <div id="events">Пока нет новых результатов.</div></section></main>
 <script>
 const token='__TOKEN__', $=id=>document.getElementById(id), choices={any:'Любое',new:'Новое',used:'Б/у',private:'Частный',shop:'Магазин'};
 let cursor=0, events=[], busy=false;
+let telegramEnabled=false,telegramBusy=false;
+function drawTelegram(t){telegramEnabled=t.enabled;const paired=t.paired;$('tg-test').hidden=!paired;$('tg-toggle').hidden=!paired;$('tg-resume').hidden=!t.bot_username||paired;if(t.pair_command){$('tg-pair').hidden=false;$('tg-link').href=t.pair_url;$('tg-command').textContent=t.pair_command}else if(paired){$('tg-pair').hidden=true}$('tg-toggle').textContent=t.enabled?'Приостановить уведомления':'Возобновить уведомления';$('tg-status').textContent=paired?(t.enabled?'Уведомления включены':'Уведомления приостановлены')+' · @'+t.bot_username+' · Отправлено: '+(t.counts.sent||0):'Telegram не подключён.';$('tg-uncertain').hidden=!(t.counts.uncertain||0);if(t.counts.failed)$('tg-message').textContent='Есть ошибка доставки. Проверьте токен и доступность бота.'}
+async function telegramAction(path,body){if(telegramBusy)return null;telegramBusy=true;const buttons=['tg-setup','tg-confirm','tg-test','tg-toggle'];buttons.forEach(id=>$(id).disabled=true);try{$('tg-message').textContent='Подключаем…';const d=await api(path,body);$('tg-message').textContent='Готово';await refresh();return d}catch(e){$('tg-message').textContent=e.message;return null}finally{telegramBusy=false;buttons.forEach(id=>$(id).disabled=false)}}
+$('tg-setup').onclick=async()=>{const value=$('tg-token').value.trim();try{const d=await telegramAction('/api/telegram/setup',{token:value});if(d){$('tg-link').href=d.pair_url;$('tg-command').textContent=d.pair_command;$('tg-pair').hidden=false}}finally{$('tg-token').value=''}};
+$('tg-resume').onclick=()=>telegramAction('/api/telegram/resume',{});
+$('tg-confirm').onclick=async()=>{if(await telegramAction('/api/telegram/pair',{})){$('tg-pair').hidden=true;$('tg-message').textContent='Чат подключён. Можно отправить тестовое уведомление.'}};
+$('tg-test').onclick=async()=>{if(await telegramAction('/api/telegram/test',{}))$('tg-message').textContent='Тестовое уведомление отправлено.'};
+$('tg-toggle').onclick=()=>telegramAction('/api/telegram/enable',{enabled:!telegramEnabled});
 const date=t=>t?new Intl.DateTimeFormat('ru-RU',{timeZone:'Europe/Saratov',dateStyle:'short',timeStyle:'short'}).format(typeof t==='number'?new Date(t*1000):new Date(t)):'Неизвестно';
 function node(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n}
 async function api(path,body){const r=await fetch(path,body?{method:'POST',headers:{'Content-Type':'application/json','X-Monitor-Token':token},body:JSON.stringify(body)}:{});const d=await r.json();if(!r.ok)throw Error(d.error||'Не удалось выполнить действие');return d}
@@ -50,7 +74,7 @@ for(const event of [...events].reverse()){const p=event.payload,wrap=node('artic
 const a=node('a',p.title||'Объявление');a.href=u.href;a.target='_blank';a.rel='noopener noreferrer';row.append(a,node('span',p.price||'Цена не указана','price'));wrap.append(row);
 const seller=p.seller_inference;wrap.append(node('p',[p.location||'Город неизвестен',p.condition||'Состояние неизвестно',p.rating?'Рейтинг '+p.rating:'Рейтинг неизвестен',seller?seller.label+' (по описанию)':'Тип продавца не проверялся'].join(' · '),'muted'));
 wrap.append(node('p','Дата Авито: '+(p.publication?.date||p.date||'неизвестна')+' · Впервые найдено: '+date(p.first_seen_at),'muted'));root.append(wrap)}}
-async function refresh(){if(busy)return;busy=true;try{let d=await api('/api/state?after_id='+cursor);drawWatches(d.watches);const ids=new Set(events.map(x=>x.id));for(const e of d.events){if(!ids.has(e.id))events.push(e);cursor=Math.max(cursor,e.id)}events=events.slice(-200);drawEvents()}catch{$('status').textContent='Связь с мониторингом прервана. Проверьте, что сервер работает.'}finally{busy=false}}
+async function refresh(){if(busy)return;busy=true;try{let d=await api('/api/state?after_id='+cursor);drawWatches(d.watches);drawTelegram(d.notifications);const ids=new Set(events.map(x=>x.id));for(const e of d.events){if(!ids.has(e.id))events.push(e);cursor=Math.max(cursor,e.id)}events=events.slice(-200);drawEvents()}catch{$('status').textContent='Связь с мониторингом прервана. Проверьте, что сервер работает.'}finally{busy=false}}
 $('form').onsubmit=async e=>{e.preventDefault();$('status').textContent='Сохраняем…';try{const body={query:$('query').value,city:$('city').value.trim()||null,condition:$('condition').value,seller_type:$('seller_type').value,min_rating:$('min_rating').value===''?null:Number($('min_rating').value),max_age_minutes:$('max_age_minutes').value===''?null:Number($('max_age_minutes').value)};await api('/api/save',body);$('status').textContent='Мониторинг создан. Первый проход запомнит текущую выдачу.';await refresh()}catch(e){$('status').textContent=e.message}};
 refresh();setInterval(refresh,5000);
 </script></html>

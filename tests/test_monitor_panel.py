@@ -7,6 +7,7 @@ from playwright.async_api import Error, async_playwright
 
 from avito_personal_mcp.monitor import WatchStore
 from avito_personal_mcp.monitor_panel import MonitorPanel
+from avito_personal_mcp.notifications import NotificationService
 
 
 def test_panel_rejects_cross_site_mutations_and_escapes_listing_text(tmp_path):
@@ -43,6 +44,60 @@ def test_panel_rejects_cross_site_mutations_and_escapes_listing_text(tmp_path):
         with pytest.raises(HTTPError) as failure:
             urlopen(bad)
         assert failure.value.code == 403
+    finally:
+        panel.close()
+
+
+@pytest.mark.asyncio
+async def test_telegram_panel_clears_token_pairs_private_chat_and_sends_only_on_test_click(
+    tmp_path,
+):
+    from test_notifications import FakeTelegram, MemorySecret
+
+    FakeTelegram.sends, FakeTelegram.updates = [], []
+    FakeTelegram.failure, FakeTelegram.webhook = None, False
+    store = WatchStore(tmp_path / "telegram-ui.db")
+    notifications = NotificationService(store, FakeTelegram, MemorySecret())
+    panel = MonitorPanel(store, notifications)
+    try:
+        async with async_playwright() as playwright:
+            try:
+                browser = await playwright.chromium.launch(channel="chrome", headless=True)
+            except Error as exc:
+                if "not found" in str(exc) or "doesn't exist" in str(exc):
+                    pytest.skip("Panel acceptance requires installed Chrome")
+                raise
+            try:
+                page = await browser.new_page()
+                await page.goto(panel.url)
+                await page.locator("#tg-token").fill("fake-token-for-ui-test")
+                await page.locator("#tg-setup").click()
+                await page.locator("#tg-confirm").wait_for()
+                assert await page.locator("#tg-token").input_value() == ""
+                assert FakeTelegram.sends == []
+                import time
+
+                FakeTelegram.updates = [
+                    {
+                        "message": {
+                            "text": "/start " + notifications.pairing["nonce"],
+                            "date": int(time.time()),
+                            "chat": {"id": 123, "type": "private"},
+                            "from": {"id": 123},
+                        }
+                    }
+                ]
+                await page.locator("#tg-confirm").click()
+                await page.locator("#tg-test").wait_for()
+                assert FakeTelegram.sends == []
+                await page.locator("#tg-test").click()
+                await page.wait_for_function(
+                    "() => document.querySelector('#tg-message').textContent.includes('отправлено')"
+                )
+                assert len(FakeTelegram.sends) == 1
+                assert FakeTelegram.sends[0]["chat_id"] == 123
+            finally:
+                await browser.close()
     finally:
         panel.close()
 

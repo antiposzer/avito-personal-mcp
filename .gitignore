@@ -21,6 +21,7 @@ browser-data/
 session-data/
 *.cookies.json
 *.storage-state.json
+*.secret
 
 # Logs
 *.log
