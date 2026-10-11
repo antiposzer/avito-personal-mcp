@@ -29,11 +29,13 @@ def test_search_maps_to_mcp_tool() -> None:
             "min_price": None,
             "max_price": None,
             "sort": None,
+            "city": None,
+            "local_priority": None,
         },
     )
 
 
-def test_search_maps_price_and_sort_options_to_mcp_tool() -> None:
+def test_search_maps_city_price_and_sort_options_to_mcp_tool() -> None:
     args = parse(
         "search",
         "мини ПК Ryzen 7840HS",
@@ -43,6 +45,8 @@ def test_search_maps_price_and_sort_options_to_mcp_tool() -> None:
         "100000",
         "--sort",
         "price_asc",
+        "--city",
+        "Саратов, Саратовская область",
     )
     assert command_to_tool(args) == (
         "avito_search",
@@ -52,8 +56,20 @@ def test_search_maps_price_and_sort_options_to_mcp_tool() -> None:
             "min_price": 10_000,
             "max_price": 100_000,
             "sort": "price_asc",
+            "city": "Саратов, Саратовская область",
+            "local_priority": None,
         },
     )
+
+
+@pytest.mark.parametrize(
+    ("flag", "expected"), [("--local-priority", True), ("--no-local-priority", False)]
+)
+def test_search_maps_local_priority_switch(flag: str, expected: bool) -> None:
+    tool, args = command_to_tool(parse("search", "AirPods 5", "--city", "Саратов", flag))
+    assert tool == "avito_search"
+    assert args["city"] == "Саратов"
+    assert args["local_priority"] is expected
 
 
 def test_listing_maps_to_mcp_tool() -> None:
@@ -104,7 +120,8 @@ def test_installed_server_command_uses_sibling_console_script(
     scripts_dir.mkdir()
     python_executable = scripts_dir / "python"
     python_executable.touch()
-    server_command = scripts_dir / "avito-personal-mcp"
+    script_name = "avito-personal-mcp.exe" if cli.os.name == "nt" else "avito-personal-mcp"
+    server_command = scripts_dir / script_name
     server_command.touch()
     monkeypatch.setattr(cli.sys, "executable", str(python_executable))
 

@@ -26,6 +26,11 @@ session-data/
 *.log
 logs/
 
+# Local exports and private diagnostics
+/artifacts/
+/outputs/
+/inspect_avito.py
+
 # macOS
 .DS_Store
 

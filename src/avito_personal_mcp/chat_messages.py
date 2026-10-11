@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from playwright.async_api import Page
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from avito_personal_mcp.navigation import (
     PrivatePageStateError,
@@ -49,19 +50,40 @@ def normalize_message(raw: dict[str, Any]) -> dict[str, Any]:
     """Normalize one message from the observed Avito messenger DOM."""
 
     direction_class = _clean(raw.get("direction_class"))
-    if direction_class and "message-base-module-right-" in direction_class:
+
+    if direction_class and (
+        "right-" in direction_class or "message-base-module-right-" in direction_class
+    ):
         direction = "outgoing"
-    elif direction_class and "message-base-module-left-" in direction_class:
+    elif direction_class and (
+        "left-" in direction_class or "message-base-module-left-" in direction_class
+    ):
         direction = "incoming"
     else:
         direction = "unknown"
 
-    text = _clean(raw.get("text"))
+    text_value = raw.get("text")
+    text = (
+        "\n".join(" ".join(line.split()) for line in text_value.splitlines()).strip() or None
+        if isinstance(text_value, str)
+        else None
+    )
     datetime = _clean(raw.get("datetime"))
     has_image = raw.get("has_image") is True
+    attachments = []
+    for attachment in raw.get("attachments") or []:
+        if isinstance(attachment, dict):
+            name, size = _clean(attachment.get("name")), _clean(attachment.get("size"))
+            if name or size:
+                attachments.append({"name": name, "size": size})
 
-    if text is not None:
+    if raw.get("is_system") is True:
+        direction = "system"
+        message_type = "system"
+    elif text is not None:
         message_type = "text"
+    elif attachments:
+        message_type = "file"
     elif has_image:
         message_type = "image"
     else:
@@ -72,6 +94,7 @@ def normalize_message(raw: dict[str, Any]) -> dict[str, Any]:
         "type": message_type,
         "text": text,
         "datetime": datetime,
+        "attachments": attachments,
     }
 
 
@@ -97,11 +120,26 @@ async def discover_chat_messages(
         response = await page.goto(origin + target_path, wait_until="domcontentloaded")
 
     if response is not None and response.status >= 400:
-        raise ChatMessagesDiscoveryError(
-            f"Avito conversation page returned HTTP {response.status}"
-        )
+        raise ChatMessagesDiscoveryError(f"Avito conversation page returned HTTP {response.status}")
 
     await page.wait_for_timeout(750)
+    # Text bubbles can precede their time/footer nodes during hydration.
+    # Read the last slice only after it has its rendered timestamps.
+    try:
+        await page.wait_for_function(
+            """(limit) => {
+                const history = document.querySelector('[data-marker="messagesHistory/list"]');
+                const messages = [...document.querySelectorAll('[data-marker="message"]')];
+                return Boolean(history && messages.length && messages.slice(-limit)
+                    .every(e => e.querySelector('time[datetime]')));
+            }""",
+            arg=normalized_limit,
+            timeout=5_000,
+        )
+    except PlaywrightTimeoutError:
+        # Empty or legacy threads may have no timestamp nodes; preserve their
+        # available content and explicit null values rather than guessing dates.
+        pass
 
     raw = await page.evaluate(
         r"""
@@ -122,16 +160,29 @@ async def discover_chat_messages(
                     const classNames = typeof message.className === 'string'
                         ? message.className.split(/\s+/).filter(Boolean)
                         : [];
-                    const directionClass = classNames.find(name =>
-                        /message-base-module-(left|right)-/.test(name)
-                    ) || null;
+const directionClass = classNames.find(name =>
+    /^(left|right)-/.test(name) ||
+    /message-base-module-(left|right)-/.test(name)
+) || null;
                     const time = message.querySelector('time[datetime]');
 
                     return {
                         direction_class: directionClass,
                         text: message.querySelector(
                             '[data-marker="messageText"]'
+                        )?.textContent?.trim() || message.querySelector(
+                            '[data-marker="platformMessage/text"]'
                         )?.textContent?.trim() || null,
+                        is_system: Boolean(message.querySelector(
+                            '[data-marker="platformMessage/text"]'
+                        )),
+                        attachments: [...message.querySelectorAll('[data-marker="messageFile"]')]
+                            .map(file => ({
+                                name: file.querySelector('[data-marker="messageFile/name"]')
+                                    ?.textContent?.trim() || null,
+                                size: file.querySelector('[data-marker="messageFile/fileSize"]')
+                                    ?.textContent?.trim() || null,
+                            })),
                         has_image: Boolean(
                             message.querySelector('[data-marker="messageImage"]')
                         ),
@@ -148,6 +199,8 @@ async def discover_chat_messages(
         raise ChatMessagesDiscoveryError("Avito conversation returned an invalid page payload")
 
     try:
+        if raw.get("pathname") != target_path:
+            raise ChatMessagesDiscoveryError("Avito opened a different conversation")
         validate_private_page_state(
             pathname=raw.get("pathname"),
             expected_path_prefix=target_path,

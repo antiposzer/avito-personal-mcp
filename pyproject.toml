@@ -16,6 +16,7 @@ dependencies = [
   "mcp[cli]>=2,<3",
   "playwright>=1.54,<2",
   "pydantic>=2.11,<3",
+  "tzdata>=2025.2",
 ]
 
 [project.optional-dependencies]

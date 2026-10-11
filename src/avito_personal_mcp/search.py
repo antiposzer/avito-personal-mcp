@@ -39,6 +39,14 @@ PRICE_FROM_SELECTOR = '[data-marker="price-from/input"]'
 PRICE_TO_SELECTOR = '[data-marker="price-to/input"]'
 FILTERS_CONFIRM_SELECTOR = '[data-marker="filters-popup/confirm-button"]'
 SORT_TITLE_SELECTOR = '[data-marker="sort/title"]'
+LOCATION_BUTTON_SELECTOR = '[data-marker="search-form/change-location"] a[role="button"]'
+CITY_INPUT_SELECTOR = '[data-marker="popup-location/region/search-input"]'
+CITY_OPTIONS_SELECTOR = (
+    'button[role="checkbox"][data-marker^="popup-location/region/custom-option("]'
+)
+LOCATION_SAVE_SELECTOR = '[data-marker="popup-location/save-button"]'
+LOCAL_PRIORITY_SELECTOR = '[data-marker="filters/localPriority/localPriority"][role="switch"]'
+LOCAL_PRIORITY_TOGGLE_SELECTOR = '[data-marker="filters/localPriority/toggle"]'
 
 
 class SearchOptions(TypedDict):
@@ -47,6 +55,167 @@ class SearchOptions(TypedDict):
     min_price: int | None
     max_price: int | None
     sort: str | None
+
+
+def validate_city(city: str | None) -> str | None:
+    """Accept a city name, optionally qualified by the observed region label."""
+
+    if city is None:
+        return None
+    if not isinstance(city, str) or any(not part.strip() for part in city.split(",")):
+        raise SearchDiscoveryError("city must be a non-empty city name")
+    return " ".join(city.split())
+
+
+def _location_key(value: str) -> str:
+    return ",".join(" ".join(part.split()) for part in value.split(",")).casefold()
+
+
+def _matching_city_options(labels: list[str], city: str) -> list[int]:
+    """Match the whole city name; never choose an ambiguous namesake by position."""
+
+    requested = _location_key(city)
+    return [
+        index
+        for index, label in enumerate(labels)
+        if (
+            _location_key(label)
+            if "," in requested
+            else _location_key(label).split(",", 1)[0]
+        ) == requested
+    ]
+
+
+def _location_title_matches(title: str | None, city: str) -> bool:
+    if not title:
+        return False
+    parts = _location_key(title).split(",")
+    # The observed SERP title adds the district-picker caption "район" even
+    # when only the city is shown on the home page. Accept just these two
+    # observed formats, not arbitrary suffixes or lists of selected cities.
+    return (
+        parts[0] == _location_key(city).split(",", 1)[0]
+        and (len(parts) == 1 or parts[1:] == ["район"])
+    )
+
+
+async def _verify_city_filter(page: Page, city: str) -> None:
+    location = page.locator(LOCATION_BUTTON_SELECTOR).first
+    if not await location.count():
+        raise SearchDiscoveryError("Avito location control was not found")
+    displayed = None
+    for _ in range(20):
+        displayed = await location.get_attribute("title")
+        if _location_title_matches(displayed, city):
+            return
+        await page.wait_for_timeout(500)
+    # The location title is public search metadata. Include just this observed
+    # control value for diagnosis, never page HTML or browser/session state.
+    raise SearchDiscoveryError(
+        f"Avito did not retain the requested city (location title: {displayed!r})"
+    )
+
+
+async def _apply_city_filter(page: Page, city: str) -> None:
+    """Use the user-observed city picker and verify the resulting location title."""
+
+    location = page.locator(LOCATION_BUTTON_SELECTOR).first
+    if not await location.count():
+        raise SearchDiscoveryError("Avito location control was not found")
+    previous_city = await location.get_attribute("title")
+    city_input = page.locator(CITY_INPUT_SELECTOR).first
+    save = page.locator(LOCATION_SAVE_SELECTOR).first
+    try:
+        await location.click(timeout=5_000)
+        await city_input.wait_for(state="visible", timeout=5_000)
+        # Clearing first also triggers suggestions when the input already
+        # contains the requested city from the previous selection.
+        await city_input.fill("")
+        await city_input.fill(city.split(",", 1)[0].strip())
+        options = page.locator(CITY_OPTIONS_SELECTOR)
+        matches: list[int] = []
+        labels: list[str] = []
+        for _ in range(20):
+            await page.wait_for_timeout(500)
+            labels = await options.all_text_contents()
+            matches = _matching_city_options(labels, city)
+            if len(matches) == 1:
+                break
+        if len(matches) > 1:
+            raise SearchDiscoveryError(
+                "Avito city is ambiguous; specify the city and region separated by a comma"
+            )
+        if not matches:
+            raise SearchDiscoveryError("Avito did not show an exact city suggestion")
+
+        matches = _matching_city_options(await options.all_text_contents(), city)
+        if len(matches) != 1:
+            raise SearchDiscoveryError("Avito city suggestions changed before selection")
+        choice = options.nth(matches[0])
+        # Re-check the selected row in case the reactive suggestions changed
+        # between reading their labels and resolving the locator.
+        if not _matching_city_options([await choice.inner_text()], city):
+            raise SearchDiscoveryError("Avito city suggestions changed before selection")
+        checked = await choice.get_attribute("aria-checked")
+        if checked not in {"true", "false"}:
+            raise SearchDiscoveryError("Avito city suggestion has an unknown selection state")
+        if checked == "false":
+            await choice.click(timeout=5_000)
+        await save.wait_for(state="visible", timeout=5_000)
+        before_url = page.url
+        await save.click(timeout=5_000)
+        await city_input.wait_for(state="hidden", timeout=10_000)
+    except PlaywrightTimeoutError as exc:
+        raise SearchDiscoveryError("Avito city picker did not reach the expected UI state") from exc
+
+    # Saving the already selected city can close the popup without navigating.
+    # A qualified name still requires a refresh: its region may have changed.
+    same_city = "," not in city and _location_title_matches(previous_city, city)
+    if same_city and page.url == before_url:
+        await _wait_for_hydrated_results(page, "city selection")
+    else:
+        await _wait_for_serp_refresh(page, before_url, "city selection")
+    await _verify_city_filter(page, city)
+
+
+async def _local_priority_state(page: Page) -> bool:
+    switch = page.locator(LOCAL_PRIORITY_SELECTOR).first
+    toggle = page.locator(LOCAL_PRIORITY_TOGGLE_SELECTOR).first
+    if not await switch.count() or not await toggle.count():
+        raise SearchDiscoveryError("Avito local-priority control was not found")
+    checked = await switch.get_attribute("aria-checked")
+    if checked not in {"true", "false"}:
+        raise SearchDiscoveryError("Avito local-priority control has an unknown selection state")
+    state = checked == "true"
+    if await toggle.is_checked() != state:
+        raise SearchDiscoveryError("Avito local-priority controls disagree about selection state")
+    return state
+
+
+async def _verify_local_priority(page: Page, expected: bool) -> None:
+    for _ in range(20):
+        if await _local_priority_state(page) == expected:
+            return
+        await page.wait_for_timeout(500)
+    raise SearchDiscoveryError("Avito did not retain the requested local priority")
+
+
+async def _apply_local_priority(page: Page, enabled: bool) -> None:
+    """Set the observed 'Сначала из <город>' switch without toggling twice."""
+
+    switch = page.locator(LOCAL_PRIORITY_SELECTOR).first
+    try:
+        await switch.wait_for(state="visible", timeout=5_000)
+        if await _local_priority_state(page) == enabled:
+            return
+        before_url = page.url
+        await switch.click(timeout=5_000)
+    except PlaywrightTimeoutError as exc:
+        raise SearchDiscoveryError(
+            "Avito local-priority control did not reach the expected UI state"
+        ) from exc
+    await _wait_for_serp_refresh(page, before_url, "local priority")
+    await _verify_local_priority(page, enabled)
 
 
 def validate_search_options(
@@ -106,12 +275,24 @@ def normalize_search_result(raw: dict[str, Any], origin: str) -> dict[str, Any]:
         value = " ".join(value.split())
         return value or None
 
+    badges: list[str] = []
+    raw_badges = raw.get("badges")
+    if isinstance(raw_badges, list):
+        for value in raw_badges:
+            if isinstance(value, str):
+                badge = " ".join(value.split())
+                if badge and badge not in badges:
+                    badges.append(badge)
+
     return {
         "id": int(listing_id),
         "title": clean("title"),
         "url": safe_url,
         "price": clean("price"),
+        "condition": clean("condition"),
         "location": clean("location"),
+        "rating": clean("rating"),
+        "badges": badges,
         "date": clean("date"),
         "seller": clean("seller"),
     }
@@ -341,6 +522,8 @@ async def search_avito(
     min_price: int | None = None,
     max_price: int | None = None,
     sort: str | None = None,
+    city: str | None = None,
+    local_priority: bool | None = None,
 ) -> list[dict[str, Any]]:
     """Search Avito using only normal rendered UI controls and result markers."""
 
@@ -350,8 +533,15 @@ async def search_avito(
     if not 1 <= limit <= 50:
         raise SearchDiscoveryError("Search limit must be between 1 and 50")
     options = validate_search_options(min_price, max_price, sort)
+    city = validate_city(city)
+    if local_priority is not None and not isinstance(local_priority, bool):
+        raise SearchDiscoveryError("local_priority must be a boolean or null")
 
     await _submit_search_form(page, origin, query)
+    if city is not None:
+        await _apply_city_filter(page, city)
+    if local_priority is not None:
+        await _apply_local_priority(page, local_priority)
     if options["min_price"] is not None or options["max_price"] is not None:
         await _apply_price_filter(
             page,
@@ -360,6 +550,10 @@ async def search_avito(
         )
     if options["sort"] is not None:
         await _apply_sort(page, options["sort"])
+    if city is not None:
+        await _verify_city_filter(page, city)
+    if local_priority is not None:
+        await _verify_local_priority(page, local_priority)
 
     raw = await page.evaluate(
         r"""
@@ -375,6 +569,12 @@ async def search_avito(
             };
 
             const findCard = (titleEl) => {
+                // Price often lives in a smaller ancestor than the seller and
+                // location. Prefer the full observed card before any fallback.
+                const card = titleEl.closest('[data-marker="item"]');
+                if (card && root.contains(card)) {
+                    return card;
+                }
                 let el = titleEl.parentElement;
                 for (let depth = 0; el && depth < 12; depth++, el = el.parentElement) {
                     if (el.matches?.('[data-marker="item"]')) {
@@ -402,7 +602,12 @@ async def search_avito(
                     href,
                     title: (titleEl.textContent || '').trim() || null,
                     price: text(card, 'item-price-value') || text(card, 'item-price'),
+                    condition: text(card, 'item-specific-params'),
                     location: text(card, 'item-location'),
+                    rating: text(card, 'seller-rating/score'),
+                    badges: [...(card?.querySelectorAll(
+                        '[data-marker^="iva-item/"], [data-marker^="badge-title-"]'
+                    ) || [])].map(el => (el.textContent || '').trim()).filter(Boolean),
                     date: text(card, 'item-date'),
                     seller: text(card, 'seller-info/summary'),
                 };

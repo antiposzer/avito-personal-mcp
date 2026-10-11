@@ -23,6 +23,7 @@ def test_normalize_incoming_text_message() -> None:
         "type": "text",
         "text": "Могу сегодня подъехать?",
         "datetime": "2026-05-17T16:38:29",
+        "attachments": [],
     }
 
 
@@ -41,6 +42,7 @@ def test_normalize_outgoing_image_message() -> None:
         "type": "image",
         "text": None,
         "datetime": "2026-06-01T19:30:12",
+        "attachments": [],
     }
 
 
@@ -59,6 +61,7 @@ def test_normalize_unknown_other_message() -> None:
         "type": "other",
         "text": None,
         "datetime": None,
+        "attachments": [],
     }
 
 

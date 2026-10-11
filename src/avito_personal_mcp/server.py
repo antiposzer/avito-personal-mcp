@@ -16,7 +16,7 @@ from avito_personal_mcp.favorites import FavoritesDiscoveryError, discover_favor
 from avito_personal_mcp.listing_detail import ListingDetailError, discover_listing_detail
 from avito_personal_mcp.listings import ListingsDiscoveryError, discover_own_listings
 from avito_personal_mcp.profile import ProfileDiscoveryError, discover_current_profile
-from avito_personal_mcp.search import SearchDiscoveryError, search_avito
+from avito_personal_mcp.search import SearchDiscoveryError, search_avito, validate_city
 from avito_personal_mcp.send_message import (
     SendMessageError,
     consume_confirmation,
@@ -183,8 +183,17 @@ async def avito_search(
     min_price: int | None = None,
     max_price: int | None = None,
     sort: str | None = None,
+    city: str | None = None,
+    local_priority: bool | None = None,
 ) -> dict[str, object]:
-    """Search Avito read-only with observed generic price and sort controls."""
+    """Search Avito read-only by city, price and sort through observed UI controls.
+
+    Use a city name such as 'Саратов'. For ambiguous names, use 'city, region'.
+    City selection does not change the existing radius or nearby-area settings.
+    local_priority=True enables 'Сначала из <город>'; False disables it.
+    None preserves the site's current setting. This prioritizes the selected
+    city, but does not exclude listings from other cities.
+    """
 
     settings = Settings.from_env()
     try:
@@ -212,6 +221,8 @@ async def avito_search(
                 min_price,
                 max_price,
                 sort,
+                city,
+                local_priority,
             )
         except SearchDiscoveryError as exc:
             return {
@@ -227,6 +238,8 @@ async def avito_search(
                 "min_price": min_price,
                 "max_price": max_price,
                 "sort": sort,
+                "city": validate_city(city),
+                "local_priority": local_priority,
             },
             "results": results,
         }

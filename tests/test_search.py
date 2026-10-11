@@ -52,7 +52,10 @@ def test_normalize_search_result() -> None:
             "href": "/syktyvkar/noutbuki/example_1234567890",
             "title": "  Ноутбук Lenovo  ",
             "price": " 45 000 ₽ ",
+            "condition": " Б/у ",
             "location": " Сыктывкар ",
+            "rating": " 4,8 ",
+            "badges": [" Надёжный  продавец ", "Оплата частями"],
             "date": " сегодня в 10:00 ",
             "seller": " Частное лицо ",
         },
@@ -64,7 +67,10 @@ def test_normalize_search_result() -> None:
         "title": "Ноутбук Lenovo",
         "url": "https://www.avito.ru/syktyvkar/noutbuki/example_1234567890",
         "price": "45 000 ₽",
+        "condition": "Б/у",
         "location": "Сыктывкар",
+        "rating": "4,8",
+        "badges": ["Надёжный продавец", "Оплата частями"],
         "date": "сегодня в 10:00",
         "seller": "Частное лицо",
     }
@@ -88,6 +94,20 @@ def test_normalize_search_result_allows_missing_optional_text() -> None:
     assert result["location"] is None
     assert result["date"] is None
     assert result["seller"] is None
+    assert result["condition"] is None
+    assert result["rating"] is None
+    assert result["badges"] == []
+
+
+def test_badges_discard_empty_invalid_values_and_duplicates() -> None:
+    result = normalize_search_result(
+        {
+            "href": "/item_1234567890",
+            "badges": ["  ", None, 123, " Оплата  частями ", "Оплата частями"],
+        },
+        "https://www.avito.ru",
+    )
+    assert result["badges"] == ["Оплата частями"]
 
 
 def test_normalize_search_result_extracts_id_from_observed_href() -> None:

@@ -64,7 +64,7 @@ as a permanent product limit.
 | --- | --- | --- | --- | --- |
 | Connection and safe diagnostics | `avito_selfcheck` | Read | Complete foundation | Returns aggregate tab state only, never tab URLs or titles; CDP must stay loopback-only. |
 | Current profile | `avito_me` | Read | Complete foundation | Fails closed on unavailable authentication. |
-| Search and result cards | `avito_search` | Read | First useful slice complete | Text query, non-negative price bounds, and a fixed observed sort set (`default`, price asc/desc, date, discount) are supported through visible UI controls. Location, category-specific filters, and pagination remain deferred until separately observed and accepted. |
+| Search and result cards | `avito_search` | Read | First useful slice complete; local city extension | Text query, city selection, non-negative price bounds, and a fixed observed sort set (`default`, price asc/desc, date, discount) are supported through visible UI controls. Radius, category-specific filters, and pagination remain deferred until separately observed and accepted. |
 | Listing detail | `avito_get_listing` | Read | Complete foundation | A bare numeric ID is intentionally limited to the user's own listings; another listing requires its exact supplied same-origin URL. The server never constructs a URL from an ID. |
 | Own listing overview | `avito_my_listings` | Read | Complete foundation | Listing lifecycle, editing, reactivation, and price changes remain deferred writes. |
 | Favorites overview | `avito_favorites` | Read | Complete foundation | Add/remove favorites is valuable but must be a separately guarded write. |
@@ -120,7 +120,15 @@ constructs internal search URLs. Plain-text search remains the fallback. See
 
 ### Gate 13b — query-aware search extensions
 
-Research location, category-specific filters, and bounded pagination one at a
+The local city extension adds `city` / `--city` through the user-observed
+`search-form/change-location`, `popup-location/region/search-input`, city
+checkbox suggestions and `popup-location/save-button`. It requires a unique
+exact city name (or a region-qualified visible label) and verifies the resulting
+location title. Radius and nearby-area settings remain unchanged. See
+[ACCEPTANCE_CITY_FILTER.md](ACCEPTANCE_CITY_FILTER.md) for the local test and
+live acceptance scope; this is not broad acceptance across Avito layouts.
+
+Research radius, category-specific filters, and bounded pagination one at a
 time. Each must be exposed as a narrow logical parameter only after its exact
 rendered control and successful refresh state are observed in the applicable
 query/category. Do not expose generic `params[...]` passthrough values,

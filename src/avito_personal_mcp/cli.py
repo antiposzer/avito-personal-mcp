@@ -116,6 +116,13 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--limit", type=int, default=10)
     search.add_argument("--min-price", type=int)
     search.add_argument("--max-price", type=int)
+    search.add_argument("--city", help="city name, or 'city, region' for an ambiguous name")
+    search.add_argument(
+        "--local-priority",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="prioritize the selected city; --no-local-priority disables this",
+    )
     search.add_argument(
         "--sort",
         choices=("default", "price_asc", "price_desc", "date_desc", "discount_desc"),
@@ -159,6 +166,8 @@ def command_to_tool(args: argparse.Namespace) -> tuple[str, dict[str, object]]:
             "min_price": args.min_price,
             "max_price": args.max_price,
             "sort": args.sort,
+            "city": args.city,
+            "local_priority": args.local_priority,
         }
     if args.command == "listing":
         return "avito_get_listing", {"reference": args.reference}

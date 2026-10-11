@@ -139,16 +139,27 @@ to copy a compact, structured result into a chat.
 avito-ai selfcheck
 avito-ai --compact search "мини ПК для HomeLab" --limit 10
 avito-ai --compact search "ноутбук" --min-price 10000 --max-price 100000 --sort price_asc --limit 10
+avito-ai --compact search "iPhone 15 Pro Max" --city "Саратов" --limit 10
+avito-ai --compact search "AirPods 5" --city "Саратов" --local-priority --limit 10
 avito-ai listing OWN_LISTING_ID
 avito-ai listing '<exact-Avito-URL-copied-from-browser-or-search-result>'
 avito-ai messages CHAT_ID --limit 20
 ```
 
-### Search price and sort
+### Search city, price and sort
 
-`avito_search` accepts optional `min_price`, `max_price`, and `sort` arguments;
+Search results also include `condition`, `location`, `rating`, and `badges`,
+read directly from each result card without opening listings or profiles.
+`condition` is the displayed condition/parameter text (for example, `Новый`
+or `Б/у`), `location` is the displayed location (which may be only a district),
+and `rating` is the displayed seller score as text (for example, `4,8`).
+`badges` is a list of displayed labels, including price assessments, guarantees,
+payment options, and seller badges. Missing text fields are `null`; absent
+badges are `[]`. These are output fields, not additional search filters.
+
+`avito_search` accepts optional `city`, `min_price`, `max_price`, and `sort` arguments;
 the same options are exposed by `avito-ai search` as `--min-price`,
-`--max-price`, and `--sort`. Price bounds are non-negative integers and the
+`--max-price`, `--sort`, and `--city`. Price bounds are non-negative integers and the
 maximum cannot be below the minimum. Supported sort values are:
 
 - `default` — Avito's normal result order;
@@ -156,14 +167,42 @@ maximum cannot be below the minimum. Supported sort values are:
 - `date_desc` — newest first;
 - `discount_desc` — larger discount first.
 
-The server uses Avito's rendered price inputs and sort menu, then verifies that
+For example, `city="Саратов"` selects that city through Avito's location popup.
+Suggestions must match the whole city name. If several regions contain that
+name, specify the exact visible label, such as `city="Саратов, Саратовская область"`.
+The server reports an error rather than selecting an ambiguous or missing city.
+It verifies the location button's title after saving and again after other
+filters. Without `city`, existing location behaviour is preserved. The city
+parameter does not change the current radius or nearby-area settings.
+
+`local_priority=true` turns on Avito's observed **Сначала из <город>** switch;
+`false` turns it off. Omit the argument (or use `null`) to preserve the site's
+setting. With `city`, priority is applied after selecting that city; without
+`city`, it applies to the currently selected location. The equivalent CLI
+flags are `--local-priority` and `--no-local-priority`. The server checks both
+the switch's accessible state and its checkbox, waits for a result refresh
+when changing the setting, and verifies it again after price/sort changes.
+The requested setting is returned as `applied.local_priority`.
+This is a preference for local results, not a strict city-only filter: other
+cities can still appear in the result set.
+
+The server uses Avito's rendered location picker, price inputs and sort menu, then verifies that
 the visible result set refreshed. It does not construct undocumented search
 URLs or pass arbitrary filter selectors from a client. Category-specific
-filters, location, and pagination are intentionally deferred until each has
+filters, radius, and pagination are intentionally deferred until each has
 its own stable UI observation and fail-closed acceptance.
 
 A bare numeric ID is deliberately supported only for one of **your own**
 listings: the server first finds its observed URL in the authenticated profile.
+An exact public listing URL can be read without an authenticated header, provided
+navigation stays on Avito and the resulting listing ID matches the requested ID.
+Listing details read dates only from `item-view/item-date`. `date` preserves the
+displayed text; `date_iso` resolves supported Russian labels using the saved
+`date_observed_at` in `Europe/Saratov`. Date-only labels retain day precision
+without an invented time. Unsupported labels keep their original text with a
+null ISO value. If a displayed calendar date omits its year, the most recent
+past year is inferred and marked with `date_year_inferred=true`. Windows uses
+the packaged `tzdata` database rather than the host's implicit timezone.
 For another public listing, pass its exact same-origin Avito URL, copied from the
 browser or returned by `avito_search`. The server never guesses a listing URL
 from a numeric ID, because Avito paths include volatile location/category/slug
