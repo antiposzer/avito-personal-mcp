@@ -129,6 +129,15 @@ def test_publication_time_is_not_first_seen_time():
     assert not assess(dict(listing(), date="11 октября 2026 в 13:00"), config, NOW, None)[0]
 
 
+def test_relative_age_at_window_boundary_does_not_lose_fractional_capture_time():
+    captured = NOW + timedelta(microseconds=850000)
+    item = dict(listing(), publication=publication_time("5 минут назад", captured))
+    assert assess(item, validate_config("Phone", max_age_minutes=5), captured, None)[0]
+    assert not assess(
+        item, validate_config("Phone", max_age_minutes=5), captured + timedelta(seconds=1), None
+    )[0]
+
+
 @pytest.mark.parametrize(
     "changes",
     [
@@ -190,3 +199,89 @@ async def test_filtered_cards_do_not_waste_detail_requests_and_unknown_condition
     assert source.opened == 1
     assert [e["listing_id"] for e in store.events()] == ["2"]
     assert store.events()[0]["payload"]["condition"] == "Б/у"
+
+
+@pytest.mark.asyncio
+async def test_fresh_candidate_survives_slow_detail_and_delivers_once(tmp_path, monkeypatch):
+    from test_notifications import FakeTelegram, MemorySecret, connect
+
+    from avito_personal_mcp import monitor
+    from avito_personal_mcp.notifications import NotificationService
+
+    clock = {"now": NOW.timestamp()}
+    monkeypatch.setattr(monitor.time, "time", lambda: clock["now"])
+    store = WatchStore(tmp_path / "fresh.db")
+    store.save(
+        validate_config("Phone", "Саратов", seller_type="private", min_rating=4, max_age_minutes=5)
+    )
+    FakeTelegram.sends, FakeTelegram.updates = [], []
+    FakeTelegram.failure, FakeTelegram.webhook = None, False
+    notifications = NotificationService(store, FakeTelegram, MemorySecret())
+    connect(notifications)
+
+    class SlowSource(Source):
+        async def detail(self, item):
+            result = dict(
+                description="Продаю свой телефон, пользовался сам.",
+                params=[],
+                date="сегодня в 12:01",
+                date_iso="2026-10-11T12:01:00+04:00",
+                date_precision="minute",
+            )
+            clock["now"] += 120
+            return result
+
+    source = SlowSource([])
+    manager = MonitorManager(store, lambda: source)
+    await manager.poll_once()
+    clock["now"] += 300
+    source.items = [dict(listing(2), date="4 минуты назад")]
+    await manager.poll_once()
+    assert len(store.events()) == 1
+    watch = store.list()[0]
+    assert watch["next_due"] == NOW.timestamp() + 600  # Includes, rather than adds, loading time.
+    assert notifications.deliver_once()
+    assert len(FakeTelegram.sends) == 1
+    clock["now"] = NOW.timestamp() + 600
+    await manager.poll_once()
+    notifications.deliver_once()
+    assert len(FakeTelegram.sends) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_history_distinguishes_shop_from_unknown_and_keeps_last_good_counts(tmp_path):
+    store = WatchStore(tmp_path / "reasons.db")
+    store.save(validate_config("Phone", seller_type="private"))
+
+    class Sellers(Source):
+        async def detail(self, item):
+            return dict(description="Наш магазин продает телефоны" if item["id"] == 1 else None)
+
+    source = Sellers([])
+    manager = MonitorManager(store, lambda: source)
+    await manager.poll_once(NOW.timestamp())
+    source.items = [listing(1), listing(2)]
+    await manager.poll_once(NOW.timestamp() + 300)
+    source.fail = "private token and browser contents must never enter diagnostics"
+    await manager.poll_once(NOW.timestamp() + 600)
+    watch = store.list()[0]
+    assert watch["last_result_counts"]["rejected_by_reason"] == {
+        "seller_shop": 1,
+        "seller_unknown": 1,
+    }
+    assert watch["counts"]["error_code"] == "search_unavailable"
+    assert len(watch["recent_runs"]) == 3
+    assert "private token" not in str(watch)
+
+
+def test_finished_schedule_and_rate_limit_backoff_are_independent(tmp_path):
+    store = WatchStore(tmp_path / "schedule.db")
+    wid = store.save(validate_config("Phone"))["id"]
+    store.claim(NOW.timestamp())
+    store.finish(wid, None, {}, NOW.timestamp() + 40)
+    assert store.list()[0]["next_due"] == NOW.timestamp() + 300
+    assert store.claim(NOW.timestamp() + 299) is None
+    store.claim(NOW.timestamp() + 300)
+    store.finish(wid, "rate_limited", {}, NOW.timestamp() + 340)
+    assert store.list()[0]["next_due"] == NOW.timestamp() + 2140
+    assert store.claim(NOW.timestamp() + 2139) is None

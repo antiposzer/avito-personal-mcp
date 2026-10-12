@@ -1,4 +1,4 @@
-"""Durable local search monitoring. No chat access or external notifications."""
+"""Durable monitoring and diagnostics of public Avito search results."""
 
 from __future__ import annotations
 
@@ -26,6 +26,24 @@ from avito_personal_mcp.seller_type import infer_seller_type
 INTERVAL = 300
 RESULT_LIMIT = 50
 DETAIL_LIMIT = 10
+
+
+def source_error_code(exc: Exception, stage: str) -> str:
+    """Expose bounded diagnostic codes, never exception text or browser data."""
+    text = str(exc)
+    if "429" in text:
+        return "rate_limited"
+    if stage == "connect":
+        return "browser_unavailable"
+    if "did not retain the query" in text:
+        return "query_not_retained"
+    if "search-results page" in text or "search action did not navigate" in text:
+        return "search_not_ready"
+    if "city" in text.lower() or "location control" in text:
+        return "city_not_verified"
+    if "sort" in text.lower():
+        return "sort_not_verified"
+    return "detail_unavailable" if stage == "detail" else "search_unavailable"
 
 
 def validate_config(
@@ -81,7 +99,7 @@ def publication_time(raw: str | None, observed_at: datetime) -> dict:
         if seconds <= 366 * 86400:
             stamp = observed_at - timedelta(seconds=seconds)
             result.update(
-                date_iso=stamp.isoformat(timespec="seconds"),
+                date_iso=stamp.isoformat(),
                 date_precision="second" if unit.startswith("секунд") else "minute",
                 date_parse_status="resolved",
             )
@@ -161,6 +179,11 @@ class WatchStore:
                     listing_id TEXT NOT NULL, found_at REAL NOT NULL, payload TEXT NOT NULL,
                     UNIQUE(watch_id,listing_id));
                 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS monitor_runs(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    watch_id TEXT NOT NULL REFERENCES watches(id) ON DELETE CASCADE,
+                    started_at REAL NOT NULL, finished_at REAL NOT NULL,
+                    error TEXT, counts TEXT NOT NULL);
             """)
             with con:
                 yield con
@@ -204,6 +227,19 @@ class WatchStore:
             row["counts"] = json.loads(row["counts"])
             row["interval_seconds"] = INTERVAL
             row["enabled"] = bool(row["enabled"])
+            with self.connect() as con:
+                runs = con.execute(
+                    "SELECT started_at,finished_at,error,counts FROM monitor_runs "
+                    "WHERE watch_id=? ORDER BY id DESC LIMIT 10",
+                    (row["id"],),
+                ).fetchall()
+                success = con.execute(
+                    "SELECT counts FROM monitor_runs WHERE watch_id=? AND error IS NULL "
+                    "ORDER BY id DESC LIMIT 1",
+                    (row["id"],),
+                ).fetchone()
+            row["recent_runs"] = [dict(r, counts=json.loads(r["counts"])) for r in runs]
+            row["last_result_counts"] = json.loads(success[0]) if success else None
         return rows
 
     def enable(self, watch_id: str, enabled: bool) -> None:
@@ -249,12 +285,29 @@ class WatchStore:
     def finish(self, watch_id: str, error: str | None, counts: dict, now: float) -> None:
         delay = 1800 if error == "rate_limited" else INTERVAL
         with self.connect() as con:
+            started = con.execute(
+                "SELECT last_attempt FROM watches WHERE id=?", (watch_id,)
+            ).fetchone()
+            if not started:
+                return
+            # Normal checks run start-to-start: description loading must not
+            # silently extend the requested five-minute polling interval.
+            next_due = now + delay if error else max(now, (started[0] or now) + INTERVAL)
             if error == "rate_limited":
                 con.execute("INSERT OR REPLACE INTO meta VALUES('cooldown',?)", (now + delay,))
             con.execute(
                 "UPDATE watches SET lease_until=0,next_due=?,error=?,counts=?,"
                 "last_success=CASE WHEN ? IS NULL THEN ? ELSE last_success END WHERE id=?",
-                (now + delay, error, json.dumps(counts), error, now, watch_id),
+                (next_due, error, json.dumps(counts), error, now, watch_id),
+            )
+            con.execute(
+                "INSERT INTO monitor_runs(watch_id,started_at,finished_at,error,counts) "
+                "VALUES(?,?,?,?,?)",
+                (watch_id, started[0] or now, now, error, json.dumps(counts)),
+            )
+            con.execute(
+                "DELETE FROM monitor_runs WHERE id NOT IN "
+                "(SELECT id FROM monitor_runs ORDER BY id DESC LIMIT 1000)"
             )
 
 
@@ -342,10 +395,26 @@ class MonitorManager:
         if watch is None:
             return False
         wid, config = watch["id"], watch["config"]
-        counts = dict(observed=0, new_events=0, rejected=0, pending=0, limited=False)
+        counts = dict(
+            observed=0,
+            new_events=0,
+            rejected=0,
+            pending=0,
+            limited=False,
+            rejected_by_reason={},
+            seller_types={},
+        )
         error = None
+        stage = "connect"
+
+        def reject(reason):
+            counts["rejected"] += 1
+            reasons = counts["rejected_by_reason"]
+            reasons[reason] = reasons.get(reason, 0) + 1
+
         try:
             async with self.source_factory() as source:
+                stage = "search"
                 snapshot = await source.search(config)
                 items = snapshot["results"]
                 counts.update(observed=len(items), limited=len(items) >= RESULT_LIMIT)
@@ -355,6 +424,7 @@ class MonitorManager:
                         listing_id = str(item["id"])
                         item = dict(
                             item,
+                            search_observed_at=datetime.fromtimestamp(stamp, SARATOV).isoformat(),
                             publication=publication_time(
                                 item.get("date"), datetime.fromtimestamp(stamp, SARATOV)
                             ),
@@ -381,7 +451,11 @@ class MonitorManager:
                 details = 0
                 for row in pending:
                     item = json.loads(row["payload"])
-                    moment = datetime.fromtimestamp(stamp, SARATOV)
+                    moment = (
+                        datetime.fromisoformat(item["search_observed_at"])
+                        if item.get("search_observed_at")
+                        else datetime.fromtimestamp(row["first_seen"], SARATOV)
+                    )
                     item["publication"] = item.get("publication") or publication_time(
                         item.get("date"), moment
                     )
@@ -390,7 +464,7 @@ class MonitorManager:
                         cheap["condition"] = "any"
                     passes, reason = assess(item, cheap, moment, snapshot.get("city_slug"))
                     if not passes:
-                        counts["rejected"] += 1
+                        reject(reason)
                         with self.store.connect() as con:
                             con.execute(
                                 "UPDATE seen SET decision=? WHERE watch_id=? AND listing_id=?",
@@ -409,9 +483,10 @@ class MonitorManager:
                         if details >= DETAIL_LIMIT:
                             continue
                         details += 1
+                        stage = "detail"
                         detail = await source.detail(item)
                         if detail.get("state") == "inactive":
-                            counts["rejected"] += 1
+                            reject("inactive")
                             with self.store.connect() as con:
                                 con.execute(
                                     "UPDATE seen SET decision='inactive' WHERE watch_id=? "
@@ -425,16 +500,18 @@ class MonitorManager:
                             if param.startswith("Состояние:"):
                                 item["condition"] = param.split(":", 1)[1].strip()
                         item["seller_inference"] = infer_seller_type(detail.get("description"))
+                        seller_kind = item["seller_inference"]["type"]
+                        counts["seller_types"][seller_kind] = (
+                            counts["seller_types"].get(seller_kind, 0) + 1
+                        )
                         item["publication"] = {
                             k: detail.get(k) for k in ("date", "date_iso", "date_precision")
                         }
-                    # Assess age against the current time, including time spent loading details.
-                    evaluation_time = datetime.fromtimestamp(
-                        time.time() if now is None else clock, SARATOV
-                    )
-                    matches, reason = assess(
-                        item, config, evaluation_time, snapshot.get("city_slug")
-                    )
+                    # A candidate fresh when captured must not age out while
+                    # loading its description or waiting for the detail budget.
+                    matches, reason = assess(item, config, moment, snapshot.get("city_slug"))
+                    if not matches and reason == "seller_unknown_or_different":
+                        reason = "seller_" + item.get("seller_inference", {}).get("type", "unknown")
                     item["first_seen_at"] = datetime.fromtimestamp(
                         row["first_seen"], SARATOV
                     ).isoformat()
@@ -452,10 +529,11 @@ class MonitorManager:
                             )
                             counts["new_events"] += saved.rowcount
                         else:
-                            counts["rejected"] += 1
+                            reject(reason)
                         con.execute(
-                            "UPDATE seen SET decision=? WHERE watch_id=? AND listing_id=?",
-                            (reason, wid, row["listing_id"]),
+                            "UPDATE seen SET decision=?,payload=? "
+                            "WHERE watch_id=? AND listing_id=?",
+                            (reason, json.dumps(item, ensure_ascii=False), wid, row["listing_id"]),
                         )
                 with self.store.connect() as con:
                     counts["pending"] = con.execute(
@@ -465,7 +543,9 @@ class MonitorManager:
             self.store.finish(wid, "interrupted", counts, time.time())
             raise
         except Exception as exc:
-            error = "rate_limited" if "429" in str(exc) else "source_unavailable"
+            code = source_error_code(exc, stage)
+            error = "rate_limited" if code == "rate_limited" else "source_unavailable"
+            counts.update(error_code=code, failure_stage=stage)
         self.store.finish(wid, error, counts, time.time() if now is None else clock)
         return True
 

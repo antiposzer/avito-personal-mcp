@@ -200,7 +200,15 @@ async def test_submit_search_waits_for_readiness_before_one_action(submit_visibl
 
         async def fill(self, value: str) -> None:
             assert self.selector == SEARCH_INPUT_SELECTOR
+            assert value == ""
             self.page.filled_query = value
+
+        async def press_sequentially(self, value: str, **kwargs) -> None:
+            assert self.selector == SEARCH_INPUT_SELECTOR
+            self.page.filled_query = value
+
+        async def input_value(self) -> str:
+            return self.page.filled_query
 
         async def click(self) -> None:
             assert self.selector == SEARCH_SUBMIT_SELECTOR

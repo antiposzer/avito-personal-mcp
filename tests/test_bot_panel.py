@@ -90,6 +90,21 @@ async def test_only_owner_can_search_and_receives_exactly_five_results(panel):
     assert messages[-1]["text"].count("https://www.avito.ru/") == 5
     assert messages[-1]["chat_id"] == 123
     assert "Саратов" in messages[-1]["text"]
+    assert len(panel.store.list()) == 1  # A quick search must not silently create a subscription.
+
+
+@pytest.mark.asyncio
+async def test_watches_shows_filter_and_source_failure_instead_of_healthy_status(panel):
+    watch = panel.store.list()[0]
+    panel.store.claim(time.time())
+    panel.store.finish(
+        watch["id"], "source_unavailable", {"error_code": "query_not_retained"}, time.time()
+    )
+    Transport.updates = [update("/watches")]
+    await panel.poll_once()
+    text = Transport.calls[-1][1]["text"]
+    assert "Проверка не прошла" in text
+    assert "Продавцы:" in text
 
 
 @pytest.mark.asyncio

@@ -163,3 +163,53 @@ async def test_local_priority_validation_prevents_any_navigation(invalid, monkey
     with pytest.raises(search.SearchDiscoveryError, match="must be a boolean"):
         await search.search_avito(None, "https://www.avito.ru", "Phone", local_priority=invalid)
     submit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("visible_button", [True, False])
+async def test_home_query_survives_keyboard_controlled_input_before_submission(visible_button):
+    """Regression for the live home input that discarded fill() on 12 October."""
+    html = f"""
+      <input data-marker="search-form/suggest/input">
+      <button data-marker="search-form/submit-button"
+              style="{"display:none" if not visible_button else ""}">Найти</button>
+      <script>
+        const input = document.querySelector('input');
+        let keyed = false;
+        input.addEventListener('keydown', event => {{
+          keyed = true;
+          if(event.key === 'Enter') submit();
+        }});
+        input.addEventListener('input', () => {{
+          if(!keyed) input.value = '';
+          keyed = false;
+        }});
+        function submit() {{
+          if(input.value === 'iPhone 15 Pro Max')
+            location.href = '/results?query=' + encodeURIComponent(input.value);
+        }}
+        document.querySelector('button').onclick = submit;
+      </script>
+    """
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(channel="chrome", headless=True)
+        try:
+            page = await browser.new_page()
+
+            async def route(request):
+                await request.fulfill(
+                    body=(
+                        '<div data-marker="catalog-serp">'
+                        '<a data-marker="item-title">Phone</a></div>'
+                        if "/results?" in request.request.url
+                        else html
+                    ),
+                    content_type="text/html",
+                )
+
+            await page.route("https://www.avito.ru/**", route)
+            await search._submit_search_form(page, "https://www.avito.ru", "iPhone 15 Pro Max")
+            assert "/results?query=iPhone%2015%20Pro%20Max" in page.url
+            assert await page.locator('[data-marker="item-title"]').count() == 1
+        finally:
+            await browser.close()

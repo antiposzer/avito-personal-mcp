@@ -8,7 +8,13 @@ import json
 import time
 from datetime import datetime
 
-from avito_personal_mcp.monitor import SARATOV, BrowserSource, assess, validate_config
+from avito_personal_mcp.monitor import (
+    SARATOV,
+    BrowserSource,
+    assess,
+    source_error_code,
+    validate_config,
+)
 from avito_personal_mcp.notifications import DeliveryError
 
 MENU = {
@@ -17,6 +23,18 @@ MENU = {
         [{"text": "🆕 Последние 5 объявлений", "callback_data": "panel.latest"}],
         [{"text": "📋 Мои поиски", "callback_data": "panel.watches"}],
     ]
+}
+
+ERROR_LABELS = {
+    "browser_unavailable": "нет подключения к Chrome",
+    "query_not_retained": "Авито очистил запрос",
+    "search_not_ready": "Авито не открыл выдачу",
+    "city_not_verified": "город не удалось подтвердить",
+    "sort_not_verified": "сортировку не удалось подтвердить",
+    "detail_unavailable": "не удалось прочитать объявление",
+    "search_unavailable": "не удалось получить выдачу",
+    "rate_limited": "Авито ограничил запросы",
+    "source_unavailable": "источник недоступен",
 }
 
 
@@ -222,7 +240,8 @@ class BotPanel:
                     )
                 await self.send(
                     "Напиши запрос, например: iPhone 15 Pro Max.\n"
-                    f"Город: {self.city() or 'все города'}. Верну до 5 объявлений по дате."
+                    f"Город: {self.city() or 'все города'}. Верну до 5 объявлений по дате.\n"
+                    "Это разовый поиск. Автоматические уведомления идут по сохранённым поискам."
                 )
         elif command == "/latest":
             await self.latest(key)
@@ -231,9 +250,30 @@ class BotPanel:
             lines = ["Мои сохранённые поиски"]
             for watch in watches[:10]:
                 c = watch["config"]
+                state = (
+                    "на паузе"
+                    if not watch["enabled"]
+                    else "ошибка проверки"
+                    if watch["error"]
+                    else "работает"
+                )
+                lines.append(f"• {c['query']} — {c['city'] or 'все города'}; {state}")
+                seller = {"any": "любые", "private": "частные", "shop": "магазины"}
                 lines.append(
-                    f"• {c['query']} — {c['city'] or 'все города'}; "
-                    f"{'работает' if watch['enabled'] else 'на паузе'}"
+                    f"Продавцы: {seller[c['seller_type']]}; "
+                    f"рейтинг от {c['min_rating'] if c['min_rating'] is not None else 'любого'}; "
+                    f"возраст до {c['max_age_minutes'] or 'любого числа'} мин."
+                )
+                if watch["error"]:
+                    code = watch["counts"].get("error_code", watch["error"])
+                    lines.append(
+                        "Проверка не прошла: " + ERROR_LABELS.get(code, "источник недоступен")
+                    )
+                result = watch.get("last_result_counts") or watch["counts"]
+                lines.append(
+                    f"Последний результат: найдено {result.get('observed', 0)}, "
+                    f"новых совпадений {result.get('new_events', 0)}, "
+                    f"отсеяно {result.get('rejected', 0)}."
                 )
             await self.send("\n".join(lines) if watches else "Сохранённых поисков пока нет.")
         else:
@@ -285,7 +325,8 @@ class BotPanel:
                 if assess(item, config, moment, snapshot.get("city_slug"))[0]
             ][:5]
         except Exception as exc:
-            if "429" in str(exc):
+            code = source_error_code(exc, "search")
+            if code == "rate_limited":
                 with self.store.connect() as con:
                     con.execute(
                         "INSERT OR REPLACE INTO meta VALUES('cooldown',?)", (time.time() + 1800,)
@@ -294,7 +335,10 @@ class BotPanel:
                     "Авито ограничил запросы. Сохранённые результаты остаются доступны."
                 )
             else:
-                await self.send("Поиск сейчас недоступен. Проверь, что MCP и Chrome запущены.")
+                await self.send(
+                    "Поиск сейчас недоступен. Проверь, что MCP и Chrome запущены.\n"
+                    f"Причина: {ERROR_LABELS.get(code, 'не удалось получить выдачу')}."
+                )
             return
         with self.store.connect() as con:
             con.execute(

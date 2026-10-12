@@ -58,6 +58,8 @@ $('tg-confirm').onclick=async()=>{if(await telegramAction('/api/telegram/pair',{
 $('tg-test').onclick=async()=>{if(await telegramAction('/api/telegram/test',{}))$('tg-message').textContent='Тестовое уведомление отправлено.'};
 $('tg-toggle').onclick=()=>telegramAction('/api/telegram/enable',{enabled:!telegramEnabled});
 const date=t=>t?new Intl.DateTimeFormat('ru-RU',{timeZone:'Europe/Saratov',dateStyle:'short',timeStyle:'short'}).format(typeof t==='number'?new Date(t*1000):new Date(t)):'Неизвестно';
+const reasons={city_unknown_or_different:'Другой или неизвестный город',condition_unknown_or_different:'Другое или неизвестное состояние',rating_unknown_or_low:'Рейтинг ниже порога или не указан',seller_shop:'Магазин',seller_private:'Частный продавец',seller_unknown:'Тип продавца не удалось определить',seller_unknown_or_different:'Тип продавца не подходит или неизвестен',publication_time_unknown:'Нет точного времени публикации',publication_time_outside_window:'Объявление старше заданного времени',inactive:'Объявление закрыто'};
+const failures={browser_unavailable:'Нет подключения к Chrome',query_not_retained:'Форма Авито очистила запрос',search_not_ready:'Авито не открыл выдачу',city_not_verified:'Город не удалось подтвердить',sort_not_verified:'Сортировку не удалось подтвердить',detail_unavailable:'Не удалось прочитать объявление',search_unavailable:'Не удалось получить выдачу',rate_limited:'Авито ограничил запросы'};
 function node(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n}
 async function api(path,body){const r=await fetch(path,body?{method:'POST',headers:{'Content-Type':'application/json','X-Monitor-Token':token},body:JSON.stringify(body)}:{});const d=await r.json();if(!r.ok)throw Error(d.error||'Не удалось выполнить действие');return d}
 function drawWatches(items){$('watches').replaceChildren();if(!items.length){$('watches').textContent='Добавьте первый поисковый запрос.';return}
@@ -66,6 +68,12 @@ const toggle=node('button',w.enabled?'Приостановить':'Возобн�
 const c=w.config;wrap.append(node('p',[c.city||'Все города',choices[c.condition],c.seller_type==='any'?'Любой продавец':choices[c.seller_type],c.min_rating===null?'Без ограничения рейтинга':'Рейтинг от '+c.min_rating,c.max_age_minutes===null?'Любое время':'До '+c.max_age_minutes+' минут'].join(' · '),'muted'));
 const state=!w.enabled?'Приостановлен':w.error==='rate_limited'?'Авито ограничил запросы. Ожидаем повтор.':w.error?'Источник недоступен. Повторим позже.':!w.initialized?'Запоминаем текущую выдачу…':'Работает';
 wrap.append(node('p',state+' · Последняя успешная проверка: '+date(w.last_success)+' · Следующая: '+date(w.next_due),'muted'));
+if(w.counts.error_code)wrap.append(node('p','Причина сбоя: '+(failures[w.counts.error_code]||w.counts.error_code),'muted'));
+const result=w.last_result_counts||w.counts;
+wrap.append(node('p','Последний результат: карточек '+(result.observed||0)+' · Новых совпадений '+(result.new_events||0)+' · Отсеяно '+(result.rejected||0),'muted'));
+for(const [reason,amount] of Object.entries(result.rejected_by_reason||{}))wrap.append(node('p',(reasons[reason]||reason)+': '+amount,'muted'));
+if(c.max_age_minutes!==null&&c.max_age_minutes<=5)wrap.append(node('p','Окно до '+c.max_age_minutes+' мин. при проверках раз в 5 мин. может пропускать объявления во время сбоев и пауз Авито.','muted'));
+if(w.recent_runs?.length){const history=node('details'),summary=node('summary','Последние проверки');history.append(summary);for(const run of w.recent_runs)history.append(node('p',date(run.finished_at)+' · '+(run.error?(failures[run.counts.error_code]||'Проверка не прошла'):'Карточек '+run.counts.observed+', совпадений '+run.counts.new_events),'muted'));wrap.append(history)}
 if(w.counts.limited)wrap.append(node('p','Достигнут предел 50 карточек: возможно, часть результатов не попала в проверку.','muted'));
 if(w.counts.pending)wrap.append(node('p','Ожидают проверки описания: '+w.counts.pending,'muted'));
 $('watches').append(wrap)}}

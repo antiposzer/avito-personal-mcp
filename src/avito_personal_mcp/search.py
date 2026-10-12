@@ -78,11 +78,8 @@ def _matching_city_options(labels: list[str], city: str) -> list[int]:
     return [
         index
         for index, label in enumerate(labels)
-        if (
-            _location_key(label)
-            if "," in requested
-            else _location_key(label).split(",", 1)[0]
-        ) == requested
+        if (_location_key(label) if "," in requested else _location_key(label).split(",", 1)[0])
+        == requested
     ]
 
 
@@ -93,9 +90,8 @@ def _location_title_matches(title: str | None, city: str) -> bool:
     # The observed SERP title adds the district-picker caption "район" even
     # when only the city is shown on the home page. Accept just these two
     # observed formats, not arbitrary suffixes or lists of selected cities.
-    return (
-        parts[0] == _location_key(city).split(",", 1)[0]
-        and (len(parts) == 1 or parts[1:] == ["район"])
+    return parts[0] == _location_key(city).split(",", 1)[0] and (
+        len(parts) == 1 or parts[1:] == ["район"]
     )
 
 
@@ -316,9 +312,7 @@ def _validate_observed_result_options(
 ) -> None:
     """Fail closed if rendered cards contradict an explicitly requested option."""
 
-    has_price_constraint = (
-        options["min_price"] is not None or options["max_price"] is not None
-    )
+    has_price_constraint = options["min_price"] is not None or options["max_price"] is not None
     needs_ordered_price = options["sort"] == "price_asc"
     if not has_price_constraint and not needs_ordered_price:
         return
@@ -359,9 +353,7 @@ async def _wait_for_hydrated_results(page: Page, operation: str) -> None:
             return
         await page.wait_for_timeout(500)
 
-    raise SearchDiscoveryError(
-        f"Avito {operation} did not reach the observed search-results page"
-    )
+    raise SearchDiscoveryError(f"Avito {operation} did not reach the observed search-results page")
 
 
 async def _wait_for_serp_refresh(
@@ -495,13 +487,19 @@ async def _submit_search_form(page: Page, origin: str, query: str) -> None:
     # The observed home layout can expose its input before React attaches its
     # change handler. Let that initial hydration finish before filling it.
     await page.wait_for_timeout(1_000)
-    await search_input.fill(query)
+    # The current home input resets a value inserted by fill(): its query
+    # handler needs normal keyboard events. Type through the visible control,
+    # then verify the retained value before submitting a possibly empty search.
+    await search_input.fill("")
+    await search_input.press_sequentially(query, delay=50)
 
     # Avito can render an enabled button before the client-side search action
     # has finished attaching after a value change. Waiting for that observed UI
     # settling interval before the one normal click is more reliable than
     # guessing URL state or issuing a duplicate action.
     await page.wait_for_timeout(1_500)
+    if await search_input.input_value() != query:
+        raise SearchDiscoveryError("Avito search input did not retain the query")
     before_url = page.url
     if await submit_button.is_visible():
         await submit_button.click()
