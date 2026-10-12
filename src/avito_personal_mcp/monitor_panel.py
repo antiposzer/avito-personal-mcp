@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import secrets
@@ -17,9 +18,10 @@ HTML = files("avito_personal_mcp").joinpath("static/monitor.html").read_text(enc
 
 
 class MonitorPanel:
-    def __init__(self, store, notifications=None):
+    def __init__(self, store, notifications=None, bot_panel=None, loop=None):
         self.store = store
         self.notifications = notifications or NotificationService(store)
+        self.bot_panel, self.loop = bot_panel, loop
         self.token = secrets.token_urlsafe(32)
         panel = self
 
@@ -109,6 +111,11 @@ class MonitorPanel:
                         result = panel.notifications.enable(data["enabled"])
                     elif self.path == "/api/telegram/test":
                         result = panel.notifications.test()
+                    elif self.path == "/api/telegram/panel" and panel.bot_panel and panel.loop:
+                        future = asyncio.run_coroutine_threadsafe(
+                            panel.bot_panel.open(), panel.loop
+                        )
+                        result = future.result(timeout=60)
                     else:
                         return self.send(404, {"error": "Действие не найдено"})
                     return self.send(200, result)
@@ -126,7 +133,7 @@ class MonitorPanel:
                         "затем подтвердите ещё раз.",
                         "not_paired": "Сначала подключите личный чат с ботом.",
                         "telegram_unavailable": "Не удалось подключиться к Telegram. "
-                                                "Проверьте соединение и попробуйте позже.",
+                        "Проверьте соединение и попробуйте позже.",
                         "delivery_unconfirmed": "Telegram не подтвердил отправку. "
                         "Повтор может создать дубль.",
                     }

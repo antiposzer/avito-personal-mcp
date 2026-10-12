@@ -309,6 +309,15 @@ class MonitorManager:
         self.source_factory = source_factory
         self.panel = None
         self._notifications = None
+        self._bot_panel = None
+
+    @property
+    def bot_panel(self):
+        if self._bot_panel is None:
+            from avito_personal_mcp.bot_panel import BotPanel
+
+            self._bot_panel = BotPanel(self.notifications)
+        return self._bot_panel
 
     @property
     def notifications(self):

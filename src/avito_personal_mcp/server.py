@@ -47,15 +47,19 @@ async def monitor_lifespan(_server):
     manager = get_monitor()
     worker = asyncio.create_task(manager.run())
     notifications = asyncio.create_task(manager.notifications.run())
+    bot_commands = asyncio.create_task(manager.bot_panel.run())
     try:
         yield {}
     finally:
         worker.cancel()
         notifications.cancel()
+        bot_commands.cancel()
         with suppress(asyncio.CancelledError):
             await worker
         with suppress(asyncio.CancelledError):
             await notifications
+        with suppress(asyncio.CancelledError):
+            await bot_commands
         manager.close_panel()
 
 
@@ -71,7 +75,9 @@ async def avito_monitor_panel() -> dict[str, object]:
     """
     manager = get_monitor()
     if manager.panel is None:
-        manager.panel = MonitorPanel(manager.store, manager.notifications)
+        manager.panel = MonitorPanel(
+            manager.store, manager.notifications, manager.bot_panel, asyncio.get_running_loop()
+        )
     return {"status": "ok", "url": manager.panel.url, "interval_seconds": 300}
 
 
